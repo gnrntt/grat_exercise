@@ -1,0 +1,171 @@
+---
+title: "Graticule Exercise"
+author: "GRV"
+date: "8/4/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# CODE
+  
+  
+### Load libraries
+```{r libraries, include=FALSE, warning = FALSE, message = FALSE}
+
+library(dplyr) # add pipes 
+library(MatchIt)
+library(readr) # load and read datasets
+library(tibble) # format datasets
+library(gtsummary)
+library(DescTools) # calculate median and median CI
+
+```
+
+
+## Load the data tables into dataframe(s) or a database
+
+```{r load, include=FALSE, warning = FALSE, message = FALSE}
+setwd("/bd-fs-mnt/ishome/home/o993927/test")
+pat = read_csv("patient_table.csv")
+enc = read_csv("encounter_table.csv")
+```
+
+
+## Create study cohort
+
+```{r create_cohort, include=FALSE, warning = FALSE, message = FALSE}
+
+cohort = enc %>%
+  arrange(patientid, encounterdate) %>%
+  group_by(patientid) %>%
+  filter(encounterdate > as.Date("2022-07-01") & encounterdate < as.Date("2022-12-31")) %>%
+  left_join(pat, by = "patientid") %>%
+  mutate(age = as.numeric(difftime(encounterdate,birthdate, units = "weeks"))/52.25)
+
+```  
+
+
+## Create exposure cohort from July 1st though Dec 31st 2022 for both cohort selection and outcome follow-up
+### (Exposure enters a subject into the exposed cohort and serves as the index date)    
+#### Keep the first exposure if multiple exposures in same individual 
+
+```{r expose_coh, include=FALSE, warning = FALSE, message = FALSE}
+
+expo_coh = cohort %>% 
+  group_by(patientid) %>%
+  filter(exposure == TRUE) %>%
+  distinct(patientid, .keep_all= TRUE) %>%
+  add_column(exp_cohort_indic = 1) 
+
+print(paste0("Exposure cohort length:", " ",dim(expo_coh)[1]))
+
+```
+
+## Explore mortality on merged cohort
+```{r check_mortality, include=FALSE, warning = FALSE, message = FALSE}
+
+which(expo_coh$outcome == TRUE & !is.na(expo_coh$deceaseddate))
+expo_coh[dput(which(expo_coh$outcome == TRUE & !is.na(expo_coh$deceaseddate))),] # NONE
+expo_coh[dput(which(expo_coh$exposure == TRUE & !is.na(expo_coh$deceaseddate))),] # NO NEED TO REMOVE
+expo_coh[dput(which(!is.na(expo_coh$deceaseddate))),] # NO NEED TO REMOVE
+
+```
+
+
+## Compute median age at index date for the exposed cohort (including CI at 95% confidence level)
+
+```{r median_age, include=FALSE, warning = FALSE, message = FALSE}
+
+MedianCI(expo_coh$age, conf.level=0.95)
+
+```
+
+## 3.	Compute aggregate time at risk for the exposed cohort, in person-days  
+  
+```{r person_days, include=FALSE, warning = FALSE, message = FALSE}
+
+
+person_day_expo = cohort %>%
+  filter(any(exposure == TRUE)) %>%
+  mutate(outcm = ifelse(outcome == FALSE, 0, 1)) %>%
+ filter(cummax(outcm) <1) %>%
+  mutate(duration = encounterdate - first(encounterdate)) %>%
+  slice(n()) %>%
+  ungroup() %>%
+  summarise(person_days = sum(duration))
+
+person_day_expo
+   
+```
+
+
+## Write pseudo-code to select a 1:1 unexposed cohort based on the method outlined above
+### •	Exposed subjects are exact matched with unexposed subjects based on age, gender, and a healthcare encounter within the same week  
+### •	Matching is performed without replacement  
+### •	Exposed subjects may serve as unexposed matches during any week before the week of their exposure date  
+
+```{r match_unexposed_pseudocode, include=FALSE, warning = FALSE, message = FALSE}
+
+# prepare exposure cohort for merge with full cohort to get exposure indicators
+LOAD data set "expo_coh"
+  KEEP variables patientid & exp_cohort_indic
+  SAVE as modified variables as "exposed"
+END
+  
+
+# load and prepare cohort
+LOAD data set "cohort" 
+  CREATE new column "enc_year_week" 
+  MERGE data set "exposde" by patientid
+    SAVE new data as "cohort_expose_flag"
+END
+  
+
+# create categories for matching
+WITH data set "cohort_expose_flag"
+  FILTER IN exposed
+  ORDER BY age, gender & enc_year_week
+  SELECT distinct age, gender & enc_year_week
+      SUBSET independent categories (factorials)
+        SELECT age, gender, enc_year_week & subset 
+          SAVE data as "match_factors"
+END 
+
+# create exposed data with matching categories
+WITH "cohort_expose_flag"
+  FILTER IN exp_cohort_indic flag 
+    MERGE to "match_factors" by patient_id, age, gender & enc_year_week
+      SAVE "expo_factors"
+END
+
+# create unexposed data with matching categories
+WITH "cohort_expose_flag"
+  KEEP all encounters up to exposure week (exlcuding)
+    MERGE to "match_factors" by patient_id, age, gender & enc_year_week
+      SAVE "unexpo_factors"
+END  
+
+WITH "unexpo_factors" and "expo_factors"
+  TEST balance of variables
+END
+
+
+# exposed and unexposed
+BIND "expo_factors" with "unexpo_factors"
+  SELECT one unexposed match for every exposed 
+    SAVE "match"
+END
+
+WITH "match"
+  TEST balance of matched variables
+END
+  
+
+```
+
+
+
